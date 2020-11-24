@@ -13,10 +13,17 @@ from functools import partial
 from lib.net.point_rcnn import PointRCNN
 import lib.net.train_functions as train_functions
 from lib.datasets.kitti_rcnn_dataset import KittiRCNNDataset
+from lib.datasets.jrdb_rcnn_dataset import JRDBRCNNDataset
 from lib.config import cfg, cfg_from_file, save_config_to_file
 import tools.train_utils.train_utils as train_utils
 from tools.train_utils.fastai_optim import OptimWrapper
 from tools.train_utils import learning_schedules_fastai as lsf
+
+from lib.datasets.get_dataloader import get_dataloader
+import yaml
+import wandb
+
+_DEBUG = True
 
 
 parser = argparse.ArgumentParser(description="arg parser")
@@ -33,7 +40,7 @@ parser.add_argument('--mgpus', action='store_true', default=False, help='whether
 parser.add_argument("--ckpt", type=str, default=None, help="continue training from this checkpoint")
 parser.add_argument("--rpn_ckpt", type=str, default=None, help="specify the well-trained rpn checkpoint")
 
-parser.add_argument("--gt_database", type=str, default='gt_database/train_gt_database_3level_Car.pkl',
+parser.add_argument("--gt_database", type=str, default='gt_database/train_gt_database_3level_Pedestrian.pkl',
                     help='generated gt database for augmentation')
 parser.add_argument("--rcnn_training_roi_dir", type=str, default=None,
                     help='specify the saved rois for rcnn training when using rcnn_offline mode')
@@ -76,6 +83,39 @@ def create_dataloader(logger):
         test_set = KittiRCNNDataset(root_dir=DATA_PATH, npoints=cfg.RPN.NUM_POINTS, split=cfg.TRAIN.VAL_SPLIT, mode='EVAL',
                                     logger=logger,
                                     classes=cfg.CLASSES,
+                                    rcnn_eval_roi_dir=args.rcnn_eval_roi_dir,
+                                    rcnn_eval_feature_dir=args.rcnn_eval_feature_dir)
+        test_loader = DataLoader(test_set, batch_size=1, shuffle=True, pin_memory=True,
+                                 num_workers=args.workers, collate_fn=test_set.collate_batch)
+    else:
+        test_loader = None
+    return train_loader, test_loader
+
+def create_dataloader_jrdb(logger):
+    # DATA_PATH = os.path.join('../', 'data')
+    cfg_file = "cfgs/jrdb_cfg.yaml"
+
+    with open(cfg_file, "r") as f:
+        jrdb_cfg = yaml.safe_load(f)
+
+    train_set = JRDBRCNNDataset(jrdb_cfg["dataset"], npoints=cfg.RPN.NUM_POINTS, split=cfg.TRAIN.SPLIT, mode='TRAIN',
+                                 logger=logger,
+                                 rcnn_training_roi_dir=args.rcnn_training_roi_dir,
+                                 rcnn_training_feature_dir=args.rcnn_training_feature_dir,
+                                 gt_database_dir=args.gt_database)
+
+    
+    train_loader = DataLoader(train_set, batch_size=args.batch_size, pin_memory=True,
+                              num_workers=args.workers, shuffle=True, collate_fn=train_set.collate_batch,
+                              drop_last=True)
+
+    if args.train_with_eval:
+        # test_set = JRDBRCNNDataset(jrdb_cfg["dataset"], npoints=cfg.RPN.NUM_POINTS, split=cfg.TRAIN.VAL_SPLIT, mode='EVAL',
+        #                             logger=logger,
+        #                             rcnn_eval_roi_dir=args.rcnn_eval_roi_dir,
+        #                             rcnn_eval_feature_dir=args.rcnn_eval_feature_dir)
+        test_set = JRDBRCNNDataset(jrdb_cfg["dataset"], npoints=cfg.RPN.NUM_POINTS, split="train", mode='EVAL',
+                                    logger=logger,
                                     rcnn_eval_roi_dir=args.rcnn_eval_roi_dir,
                                     rcnn_eval_feature_dir=args.rcnn_eval_feature_dir)
         test_loader = DataLoader(test_set, batch_size=1, shuffle=True, pin_memory=True,
@@ -190,14 +230,31 @@ if __name__ == "__main__":
     # tensorboard log
     tb_log = SummaryWriter(log_dir=os.path.join(root_result_dir, 'tensorboard'))
 
+    # wandb
+    if not _DEBUG:
+        project = "point_rcnn"
+        wandb.init(
+            project=project,
+            name="point_rcnn_e70",
+            sync_tensorboard=True
+        )
+        wandb.config.update(cfg)
+
+
     # create dataloader & network & optimizer
     train_loader, test_loader = create_dataloader(logger)
+    # train_loader, test_loader = create_dataloader_jrdb(logger)
+    print("jrdb data loader created")
+    
     model = PointRCNN(num_classes=train_loader.dataset.num_class, use_xyz=True, mode='TRAIN')
     optimizer = create_optimizer(model)
 
     if args.mgpus:
         model = nn.DataParallel(model)
     model.cuda()
+
+    if not _DEBUG:
+        wandb.watch(model, log="all")
 
     # load checkpoint if it is possible
     start_epoch = it = 0
@@ -250,4 +307,6 @@ if __name__ == "__main__":
         lr_scheduler_each_iter=(cfg.TRAIN.OPTIMIZER == 'adam_onecycle')
     )
 
+    if not _DEBUG:
+        wandb.log({"dummy": 1.0}, commit=False)
     logger.info('**********************End training**********************')

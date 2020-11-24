@@ -77,7 +77,7 @@ class KittiRCNNDataset(KittiDataset):
                     logger.info('Loading gt_database(easy(pt_num>100): %d, hard(pt_num<=100): %d) from %s'
                                 % (len(easy_list), len(hard_list), gt_database_dir))
                 else:
-                    logger.info('Loading gt_database(%d) from %s' % (len(self.gt_database), gt_database_dir))
+                    logger.info('Loading gt_database(%d) from %s' % (len(self.gt_database), gt_database_dir)) # NOTE: Loading data from files, finished
 
             if mode == 'TRAIN':
                 self.preprocess_rpn_training_data()
@@ -382,7 +382,7 @@ class KittiRCNNDataset(KittiDataset):
 
             # pixel offset of object center
             center3d = gt_boxes3d[k][0:3].copy()  # (x, y, z)
-            center3d[1] -= gt_boxes3d[k][3] / 2
+            center3d[1] -= gt_boxes3d[k][3] / 2 # Note: Did not understand this
             reg_label[fg_pt_flag, 0:3] = center3d - fg_pts_rect  # Now y is the true center of 3d box 20180928
 
             # size and angle encoding

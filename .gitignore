@@ -2,7 +2,7 @@
 *.yaml
 *__pycache__*
 *_ext*
-/output
+/output*
 *.cu.o
 /data
 **/build

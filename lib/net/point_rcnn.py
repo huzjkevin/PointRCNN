@@ -6,7 +6,7 @@ from lib.config import cfg
 
 
 class PointRCNN(nn.Module):
-    def __init__(self, num_classes, use_xyz=True, mode='TRAIN'):
+    def __init__(self, num_classes=2, use_xyz=True, mode='TRAIN'):
         super().__init__()
 
         assert cfg.RPN.ENABLED or cfg.RCNN.ENABLED

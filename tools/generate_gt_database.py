@@ -3,7 +3,7 @@ import os
 import numpy as np
 import pickle
 import torch
-
+print(os.getcwd())
 import lib.utils.roipool3d.roipool3d_utils as roipool3d_utils
 from lib.datasets.kitti_dataset import KittiDataset
 import argparse
