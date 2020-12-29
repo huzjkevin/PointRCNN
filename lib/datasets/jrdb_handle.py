@@ -7,6 +7,7 @@ from lib.datasets._pypcd import point_cloud_from_path
 from lib.utils.jrdb_utils import rphi_to_xy
 import lib.utils.jrdb_transforms as jt
 import matplotlib.pyplot as plt
+from lib.utils.jrdb_transforms import Box3d
 
 # NOTE: Don't use open3d to load point cloud since it spams the console. Setting
 # verbosity level does not solve the problem
@@ -16,7 +17,7 @@ import matplotlib.pyplot as plt
 # Force the dataloader to load only one sample, in which case the network should
 # fit perfectly.
 _DEBUG_ONE_SAMPLE = False
-_DEBUG = True
+_DEBUG = False
 
 
 # Customized train-val split
@@ -141,9 +142,13 @@ class JRDBHandle:
         pc_fname = os.path.basename(pc_frame["pointclouds"]["upper_velodyne"]["url"])
         anns = self.sequence_pc_labels[idx_sq][pc_fname]
 
+
         segments, boxes, dets_center = self.anns_to_segments(
             points, anns, radius=self.radius_segment, perturb=self.perturb
         )  # Points in segments are transformed into base frame
+
+        # Switch y & z to keep consistent with kitti
+        points[:, [1, 2]] = points[:, [2, 1]]
 
         pc_frame.update(
             {
@@ -159,24 +164,29 @@ class JRDBHandle:
         )
 
         # #===============test===========
-        #
+        
         # fig = plt.figure(figsize=(10, 10))
         # ax = fig.add_subplot(111)
-        #
+        
         # ax.cla()
         # ax.set_aspect("equal")
         # ax.set_xlim(-5, 5)
         # ax.set_ylim(-5, 5)
-        #
+        
         # for segment, box in zip(segments, boxes):
-        #     ax.scatter(segment[..., 0], segment[..., 1], s=1, c='blue')
-        #     c = plt.Circle(box.xyz[:2], radius=0.7, color='r', fill=False)
+        #     ax.scatter(segment[..., 0], segment[..., 2], s=1, c='blue')
+        #     c = plt.Circle(box[:2], radius=0.7, color='r', fill=False)
         #     ax.add_artist(c)
-        #     box.draw_bev(ax, c='purple')
-        #
-        # plt.savefig("./tmp_imgs/dets/frame_%04d.png" % idx)
+
+        #     # Switch y & z to keep consistent with kitti
+        #     box[[1, 2]] = box[[2, 1]]
+
+        #     box3d = Box3d(box[:3], box[3:-1], box[-1])
+        #     box3d.draw_bev(ax, c='purple')
+        
+        # plt.savefig("/home/hu/Projects/PointRCNN/tmp_img/dets/frame_%04d.png" % idx)
         # plt.close(fig)
-        #
+        
         # # ===============test===========
 
         return pc_frame
@@ -209,7 +219,7 @@ class JRDBHandle:
                     pesudo_center = np.array([cx, cy, 0.176])
                 else:
                     pesudo_center = np.array(
-                        [cx + r * np.cos(alpha), cy + r * np.sin(alpha), 0.176]
+                        [cx + r * np.cos(alpha), cy + r * np.sin(alpha), cz]
                     )
 
                 # pesudo_center = np.array([cx, cy])
@@ -217,17 +227,26 @@ class JRDBHandle:
                 segment = points[
                     np.linalg.norm(points[:, :2] - pesudo_center[:2], axis=1) <= radius
                 ]
+
+                # Switch y & z to keep consistent with kitti
+                segment[:, [1, 2]] = segment[:, [2, 1]]
+
                 segments.append(segment)
                 # boxes.append(jt.box_from_jrdb(ann["box"]))
                 boxes.append(
                     np.array(
                         [
                             cx,
+                            # cy,
+                            # cz,
+                            cz, # switch y & z to keep consistent with kitti
                             cy,
-                            cz,
-                            ann["box"]["l"],
+                            # ann["box"]["l"],
+                            # ann["box"]["w"],
+                            # ann["box"]["h"],
+                            ann["box"]["h"], # switch y & z to keep consistent with kitti
                             ann["box"]["w"],
-                            ann["box"]["h"],
+                            ann["box"]["l"],
                             ann["box"]["rot_z"],
                         ]
                     )

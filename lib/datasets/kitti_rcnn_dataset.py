@@ -3,10 +3,21 @@ import os
 import pickle
 import torch
 
+import matplotlib.pyplot as plt
+
+import lib.utils.jrdb_transforms as jt
+from lib.datasets.jrdb_handle import JRDBHandle
+
 from lib.datasets.kitti_dataset import KittiDataset
 import lib.utils.kitti_utils as kitti_utils
 import lib.utils.roipool3d.roipool3d_utils as roipool3d_utils
 from lib.config import cfg
+
+_DEBUG_image_count = 0
+_XY_LIM = (-7, 7)
+_Z_LIM = (-1, 2)
+_SAVE_DIR = '/home/hu/Projects/PointRCNN/tmp_img'
+os.makedirs(_SAVE_DIR, exist_ok=True)
 
 
 class KittiRCNNDataset(KittiDataset):
@@ -230,6 +241,7 @@ class KittiRCNNDataset(KittiDataset):
             raise NotImplementedError
 
     def __getitem__(self, index):
+        index = 10
         if cfg.RPN.ENABLED:
             return self.get_rpn_sample(index)
         elif cfg.RCNN.ENABLED:
@@ -286,6 +298,7 @@ class KittiRCNNDataset(KittiDataset):
             if self.npoints < len(pts_rect):
                 pts_depth = pts_rect[:, 2]
                 pts_near_flag = pts_depth < 40.0
+                a = np.where(pts_near_flag == 0)
                 far_idxs_choice = np.where(pts_near_flag == 0)[0]
                 near_idxs = np.where(pts_near_flag == 1)[0]
                 near_idxs_choice = np.random.choice(near_idxs, self.npoints - len(far_idxs_choice), replace=False)
@@ -363,14 +376,49 @@ class KittiRCNNDataset(KittiDataset):
 
     @staticmethod
     def generate_rpn_training_labels(pts_rect, gt_boxes3d):
+        global _DEBUG_image_count
+
         cls_label = np.zeros((pts_rect.shape[0]), dtype=np.int32)
         reg_label = np.zeros((pts_rect.shape[0], 7), dtype=np.float32)  # dx, dy, dz, ry, h, w, l
         gt_corners = kitti_utils.boxes3d_to_corners3d(gt_boxes3d, rotate=True)
         extend_gt_boxes3d = kitti_utils.enlarge_box3d(gt_boxes3d, extra_width=0.2)
         extend_gt_corners = kitti_utils.boxes3d_to_corners3d(extend_gt_boxes3d, rotate=True)
-        for k in range(gt_boxes3d.shape[0]):
+
+        # # ==========================Test==================================
+        # fig = plt.figure(figsize=(10, 10))
+
+        
+
+        # ax_bev = fig.add_subplot(111)
+        # # ax2 = fig.add_subplot(122)
+
+        # # bev
+        # ax_bev.cla()
+        # ax_bev.set_aspect("equal")
+        # ax_bev.set_xlim(_XY_LIM[0], _XY_LIM[1])
+        # ax_bev.set_ylim(_XY_LIM[0], _XY_LIM[1])
+        # ax_bev.set_title(f"frame_{_DEBUG_image_count}")
+        # ax_bev.set_xlabel("x [m]")
+        # ax_bev.set_ylabel("y [m]")
+        # # ax_bev.axis("off")
+        
+        # ax_bev.scatter(pts_rect[..., 0], pts_rect[..., 1], s=1, c="blue")
+
+        
+        # # ==========================Test==================================
+
+        # for k in range(gt_boxes3d.shape[0]):
+        for k in range(1):
+            
+            # # ==========================Test==================================
+            # gt_box = jt.Box3d(np.array(gt_boxes3d[k][:3]), np.array(gt_boxes3d[k][3:6]), gt_boxes3d[k][-1])
+            # gt_box.draw_bev(ax_bev)
+            # ax_bev.scatter(gt_corners[k][..., 0], gt_corners[k][..., 1], s=3, c='black')
+            # # ==========================Test==================================
+
+
             box_corners = gt_corners[k]
-            fg_pt_flag = kitti_utils.in_hull(pts_rect, box_corners)
+            fg_pt_flag = kitti_utils.in_hull(pts_rect, box_corners) # Note
             fg_pts_rect = pts_rect[fg_pt_flag]
             cls_label[fg_pt_flag] = 1
 
@@ -382,7 +430,7 @@ class KittiRCNNDataset(KittiDataset):
 
             # pixel offset of object center
             center3d = gt_boxes3d[k][0:3].copy()  # (x, y, z)
-            center3d[1] -= gt_boxes3d[k][3] / 2 # Note: Did not understand this
+            center3d[1] -= gt_boxes3d[k][3] / 2 # Note
             reg_label[fg_pt_flag, 0:3] = center3d - fg_pts_rect  # Now y is the true center of 3d box 20180928
 
             # size and angle encoding
@@ -390,6 +438,36 @@ class KittiRCNNDataset(KittiDataset):
             reg_label[fg_pt_flag, 4] = gt_boxes3d[k][4]  # w
             reg_label[fg_pt_flag, 5] = gt_boxes3d[k][5]  # l
             reg_label[fg_pt_flag, 6] = gt_boxes3d[k][6]  # ry
+
+        # # Test
+        # plt.savefig(os.path.join(_SAVE_DIR, f"frame_{_DEBUG_image_count}.png"))
+        # plt.show()
+        # plt.close(fig)
+        # _DEBUG_image_count += 1
+        # # Test
+
+        # for k in range(gt_boxes3d.shape[0]):
+        #     box_corners = gt_corners[k]
+        #     fg_pt_flag = kitti_utils.in_hull(pts_rect, box_corners)
+        #     fg_pts_rect = pts_rect[fg_pt_flag]
+        #     cls_label[fg_pt_flag] = 1
+
+        #     # enlarge the bbox3d, ignore nearby points
+        #     extend_box_corners = extend_gt_corners[k]
+        #     fg_enlarge_flag = kitti_utils.in_hull(pts_rect, extend_box_corners)
+        #     ignore_flag = np.logical_xor(fg_pt_flag, fg_enlarge_flag)
+        #     cls_label[ignore_flag] = -1
+
+        #     # pixel offset of object center
+        #     center3d = gt_boxes3d[k][0:3].copy()  # (x, y, z)
+        #     center3d[1] -= gt_boxes3d[k][3] / 2 # Note: Did not understand this
+        #     reg_label[fg_pt_flag, 0:3] = center3d - fg_pts_rect  # Now y is the true center of 3d box 20180928
+
+        #     # size and angle encoding
+        #     reg_label[fg_pt_flag, 3] = gt_boxes3d[k][3]  # h
+        #     reg_label[fg_pt_flag, 4] = gt_boxes3d[k][4]  # w
+        #     reg_label[fg_pt_flag, 5] = gt_boxes3d[k][5]  # l
+        #     reg_label[fg_pt_flag, 6] = gt_boxes3d[k][6]  # ry
 
         return cls_label, reg_label
 

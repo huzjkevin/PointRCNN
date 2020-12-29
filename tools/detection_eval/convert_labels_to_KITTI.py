@@ -147,4 +147,3 @@ if __name__ == "__main__":
     args = parse_args()
     labels = get_labels(args.input_jrdb_dir)
     convert_jr2kitti(labels, args.output_kitti_dir)
-

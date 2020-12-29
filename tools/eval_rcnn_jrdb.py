@@ -20,12 +20,16 @@ import logging
 import re
 import glob
 import time
+
+
 from tensorboardX import SummaryWriter
 import tqdm
 import yaml
 from lib.utils.jrdb_transforms import Box3d
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+from lib.net.train_functions import get_rpn_loss
+from lib.net.train_functions import model_joint_fn_decorator 
 
 np.random.seed(1024)  # set the same seed
 
@@ -122,6 +126,12 @@ def _get_pts_color(pts, dim, r_max=20.0):
     return color
 
 def eval_one_epoch_rpn(model, dataloader, epoch_id, result_dir, logger):
+
+    final_output_dir = os.path.join(result_dir, 'final_result', 'data')
+    jrdb_result_dir = os.path.join(result_dir, 'jrdb')
+    os.makedirs(final_output_dir, exist_ok=True)
+    os.makedirs(jrdb_result_dir, exist_ok=True)
+
     np.random.seed(1024)
     mode = 'TEST' if args.test else 'EVAL'
 
@@ -145,6 +155,12 @@ def eval_one_epoch_rpn(model, dataloader, epoch_id, result_dir, logger):
 
     progress_bar = tqdm.tqdm(total=len(dataloader), leave=True, desc='eval')
 
+    # Test
+    rpn_loss_epoch = 0.0
+    model_fn = model_joint_fn_decorator()
+    avg_iou = 0.0
+    # Test
+
     for data in dataloader:
         sample_id_list, pts_rect, pts_features, pts_input = \
             data['sample_id'], data['pts_rect'], data['pts_features'], data['pts_input']
@@ -161,6 +177,12 @@ def eval_one_epoch_rpn(model, dataloader, epoch_id, result_dir, logger):
                 # logger.info('%06d: No gt box' % sample_id)
             else:
                 gt_boxes3d = torch.from_numpy(gt_boxes3d).cuda(non_blocking=True).float()
+        
+        # =================Test===================
+        rpn_cls_label, rpn_reg_label = data['rpn_cls_label'], data['rpn_reg_label']
+        rpn_cls_label = torch.from_numpy(rpn_cls_label).cuda(non_blocking=True).long()
+        rpn_reg_label = torch.from_numpy(rpn_reg_label).cuda(non_blocking=True).float()
+        # =================Test===================
 
         inputs = torch.from_numpy(pts_input).cuda(non_blocking=True).float()
         input_data = {'pts_input': inputs}
@@ -174,96 +196,202 @@ def eval_one_epoch_rpn(model, dataloader, epoch_id, result_dir, logger):
         rpn_scores = torch.sigmoid(rpn_scores_raw)
         seg_result = (rpn_scores > cfg.RPN.SCORE_THRESH).long()
 
+        # ================Test===============
+        rpn_loss = get_rpn_loss(model, rpn_cls, rpn_reg, rpn_cls_label, rpn_reg_label)
+        rpn_loss_epoch += rpn_loss 
+        loss_test, tb_dict, disp_dict = model_fn(model, data)
+        # ================Test===============
+
+
         # proposal layer
         rois, roi_scores_raw = model.rpn.proposal_layer(rpn_scores_raw, rpn_reg, backbone_xyz)  # (B, M, 7)
         batch_size = rois.shape[0]
 
-        # =============TEST===============
-        _XY_LIM = (-7, 7)
-        _Z_LIM = (-1, 2)
-        _SAVE_DIR = '../tmp_img'
-        os.makedirs(_SAVE_DIR, exist_ok=True)
-        rois = rois.data.cpu().numpy()
-        for i in range(batch_size):
-            fig = plt.figure(figsize=(20, 10))
+        # #select box with conf over 0.8
+        # choice = roi_scores_raw >= 0.8
+        # rois = rois[choice]
+        # roi_scores_raw = roi_scores_raw[choice].reshape(batch_size, -1)
 
-            ax_bev = fig.add_subplot(111)
+        # rois = gt_boxes3d
 
-            pt_xyz = pts_input[0].T
 
-            # bev
-            ax_bev.cla()
-            ax_bev.set_aspect("equal")
-            ax_bev.set_xlim(_XY_LIM[0], _XY_LIM[1])
-            ax_bev.set_ylim(_XY_LIM[0], _XY_LIM[1])
-            ax_bev.set_title(f"Frame {sample_id}-{i}")
-            ax_bev.set_xlabel("x [m]")
-            ax_bev.set_ylabel("y [m]")
-            # ax_bev.axis("off")
+        # nms for rois
+        norm_scores = torch.sigmoid(roi_scores_raw)
+        pred_classes = (norm_scores > cfg.RCNN.SCORE_THRESH).long()
+        inds = norm_scores > cfg.RCNN.SCORE_THRESH
+
+        pred_boxes3d_selected_batch = []
+        scores_selected_batch = []
+
+        for k in range(batch_size):
+
+            cur_inds = inds[k].view(-1)
+            if cur_inds.sum() == 0:
+                continue
+
+            pred_boxes3d_selected = rois[k, cur_inds]
+            raw_scores_selected = roi_scores_raw[k, cur_inds]
+            norm_scores_selected = norm_scores[k, cur_inds]
+
+            # NMS thresh
+            # rotated nms
+            boxes_bev_selected = kitti_utils.boxes3d_to_bev_torch(pred_boxes3d_selected)
+            keep_idx = iou3d_utils.nms_gpu(boxes_bev_selected, raw_scores_selected, cfg.RCNN.NMS_THRESH).view(-1)
+            pred_boxes3d_selected = pred_boxes3d_selected[keep_idx]
+            scores_selected = raw_scores_selected[keep_idx]
+            # pred_boxes3d_selected, scores_selected = pred_boxes3d_selected.cpu().numpy(), scores_selected.cpu().numpy()
+
+            pred_boxes3d_selected_batch.append(pred_boxes3d_selected.data.cpu().numpy())
+            scores_selected_batch.append(scores_selected.data.cpu().numpy())
             
-            ax_bev.scatter(pt_xyz[0], pt_xyz[1], s=1, c="blue")
+        pred_boxes3d_selected = np.array(pred_boxes3d_selected_batch)
+        scores_selected = np.array(scores_selected_batch)
+        
 
-            # gt boxes
-            for idx, gt_box in enumerate(data['gt_boxes3d'][i]):
-                gt_xyz = np.array(gt_box[:3])
-                gt_lwh = np.array(gt_box[3:-1])
-                gt_rot_z = gt_box[-1]
-                gt_box = Box3d(gt_xyz, gt_lwh, gt_rot_z)
+        # # =============TEST===============
+        # _XY_LIM = (-7, 7)
+        # _Z_LIM = (-1, 2)
+        # _SAVE_DIR = '../tmp_img'
+        # os.makedirs(_SAVE_DIR, exist_ok=True)
+        # # rois_cpu = rois.data.cpu().numpy()
+        # rois_cpu = pred_boxes3d_selected
+        # gt_box3d_cpu = data['gt_boxes3d']
+        # rois_cpu[..., [1, 2, 3, 4, 5]] = rois_cpu[..., [2, 1, 5, 4, 3]]
+        # gt_box3d_cpu[..., [1, 2, 3, 4, 5]] = gt_box3d_cpu[..., [2, 1, 5, 4, 3]]
+        # pts_input[..., [1, 2]] = pts_input[..., [2, 1]]
 
-                gt_box.draw_bev(ax_bev, c='red')
+        # for i in range(batch_size):
+        #     fig = plt.figure(figsize=(20, 10))
+
+        #     ax_bev = fig.add_subplot(111)
+
+        #     pt_xyz = pts_input[0].T
+
+        #     # bev
+        #     ax_bev.cla()
+        #     ax_bev.set_aspect("equal")
+        #     ax_bev.set_xlim(_XY_LIM[0], _XY_LIM[1])
+        #     ax_bev.set_ylim(_XY_LIM[0], _XY_LIM[1])
+        #     ax_bev.set_title(f"Frame {sample_id}-{i}")
+        #     ax_bev.set_xlabel("x [m]")
+        #     ax_bev.set_ylabel("y [m]")
+        #     # ax_bev.axis("off")
+            
+        #     ax_bev.scatter(pt_xyz[0], pt_xyz[1], s=1, c="blue")
+
+        #     # gt boxes
+        #     for idx, gt_box in enumerate(gt_box3d_cpu[i]):
+        #         gt_xyz = np.array(gt_box[:3])
+        #         gt_lwh = np.array(gt_box[3:-1])
+        #         gt_rot_z = gt_box[-1]
+        #         gt_box = Box3d(gt_xyz, gt_lwh, gt_rot_z)
+
+        #         gt_box.draw_bev(ax_bev, c='red')
    
-            # # rpn boxes
-            # for idx, rpn_box in enumerate(rois[i]):
-            #     rpn_xyz = np.array(rpn_box[:3])
-            #     rpn_lwh = np.array(rpn_box[3:-1])
-            #     rpn_rot_z = rpn_box[-1]
-            #     rpn_box = Box3d(rpn_xyz, rpn_lwh, rpn_rot_z)
+        #     # rpn boxes
+        #     for idx, rpn_box in enumerate(rois_cpu[i]):
+        #         rpn_xyz = np.array(rpn_box[:3])
+        #         rpn_lwh = np.array(rpn_box[3:-1])
+        #         rpn_rot_z = rpn_box[-1]
+        #         rpn_box = Box3d(rpn_xyz, rpn_lwh, rpn_rot_z)
 
-            #     rpn_box.draw_bev(ax_bev, c='blue')
+        #         rpn_box.draw_bev(ax_bev, c='blue')
 
-            plt.savefig(os.path.join(_SAVE_DIR, f"frame_{sample_id:04}-{i}.png"))
+        #     plt.savefig(os.path.join(_SAVE_DIR, f"frame_{sample_id:04}-{i}.png"))
 
-            plt.show()
+        #     plt.show()
 
-            plt.close(fig)
+        #     plt.close(fig)
 
         
-        # =============TEST===============
+        # # =============TEST===============
 
+        # ==================Test=====================
+        
 
-        # # calculate recall and save results to file
-        # for bs_idx in range(batch_size):
-        #     cur_sample_id = sample_id_list[bs_idx]
-        #     cur_scores_raw = roi_scores_raw[bs_idx]  # (N)
-        #     cur_boxes3d = rois[bs_idx]  # (N, 7)
-        #     cur_seg_result = seg_result[bs_idx]
-        #     cur_pts_rect = pts_rect[bs_idx]
+        # pred_boxes3d_selected = rois.data.cpu().numpy()
+        # scores_selected = roi_scores_raw.data.cpu().numpy()
+        
 
-        #     # calculate recall
-        #     if not args.test:
-        #         cur_rpn_cls_label = rpn_cls_label[bs_idx]
-        #         cur_gt_boxes3d = gt_boxes3d[bs_idx]
+        for k in range(batch_size):
+            cur_gt_boxes3d = data['gt_boxes3d'][k]
+            cur_sample_id = data['sample_id'][k]
+            tmp_idx = cur_gt_boxes3d.__len__() - 1
 
-        #         k = cur_gt_boxes3d.__len__() - 1
-        #         while k > 0 and cur_gt_boxes3d[k].sum() == 0:
-        #             k -= 1
-        #         cur_gt_boxes3d = cur_gt_boxes3d[:k + 1]
+            while tmp_idx >= 0 and cur_gt_boxes3d[tmp_idx].sum() == 0:
+                tmp_idx -= 1
 
-        #         recalled_num = 0
-        #         if cur_gt_boxes3d.shape[0] > 0:
-        #             iou3d = iou3d_utils.boxes_iou3d_gpu(cur_boxes3d, cur_gt_boxes3d[:, 0:7])
-        #             gt_max_iou, _ = iou3d.max(dim=0)
+            if tmp_idx >= 0:
+                cur_gt_boxes3d = cur_gt_boxes3d[:tmp_idx + 1]
 
-        #             for idx, thresh in enumerate(thresh_list):
-        #                 total_recalled_bbox_list[idx] += (gt_max_iou > thresh).sum().item()
-        #             recalled_num = (gt_max_iou > 0.7).sum().item()
-        #             total_gt_bbox += cur_gt_boxes3d.__len__()
+            
 
-        #         fg_mask = cur_rpn_cls_label > 0
-        #         correct = ((cur_seg_result == cur_rpn_cls_label) & fg_mask).sum().float()
-        #         union = fg_mask.sum().float() + (cur_seg_result > 0).sum().float() - correct
-        #         rpn_iou = correct / torch.clamp(union, min=1.0)
-        #         rpn_iou_avg += rpn_iou.item()
+            # Write to result files
+            detections_to_file = []
+            for pred_box, score in zip(pred_boxes3d_selected[k], scores_selected[k]):
+                detection_line = f"Pedestrian 0 0 100 0 -1 -1 -1 -1 {pred_box[5]} {pred_box[4]} {pred_box[3]} {pred_box[0]} {pred_box[1]} {pred_box[2]} {pred_box[6]} {score}\n"
+                detections_to_file.append(detection_line)
+            
+            gts_to_file = []
+            for gt_box in cur_gt_boxes3d:
+                gt_line = f"Pedestrian 0 0 100 0 -1 -1 -1 -1 {gt_box[5]} {gt_box[4]} {gt_box[3]} {gt_box[0]} {gt_box[1]} {gt_box[2]} {gt_box[6]} 1\n"
+                gts_to_file.append(gt_line)
+
+            jrdb_det_seq_dir = os.path.join(jrdb_result_dir, 'det',  data['seq_name'][k])
+            os.makedirs(jrdb_det_seq_dir, exist_ok=True)
+            jrdb_det_file = os.path.join(jrdb_det_seq_dir, f"{cur_sample_id:06}.txt")
+
+            if not os.path.exists(jrdb_det_file):
+                with open(jrdb_det_file, 'w') as temp_f:
+                    temp_f.writelines(detections_to_file)
+            
+            jrdb_gt_seq_dir = os.path.join(jrdb_result_dir, 'gt', data['seq_name'][k])
+            os.makedirs(jrdb_gt_seq_dir, exist_ok=True)
+            jrdb_gt_file = os.path.join(jrdb_gt_seq_dir, f"{cur_sample_id:06}.txt")
+
+            if not os.path.exists(jrdb_gt_file):
+                with open(jrdb_gt_file, 'w') as temp_f:
+                    temp_f.writelines(gts_to_file)
+
+        # ==================Test=====================
+
+        batch_iou = 0.0
+        
+        # calculate recall and save results to file
+        for bs_idx in range(batch_size):
+            cur_sample_id = sample_id_list[bs_idx]
+            cur_scores_raw = roi_scores_raw[bs_idx]  # (N)
+            cur_boxes3d = rois[bs_idx]  # (N, 7)
+            cur_seg_result = seg_result[bs_idx]
+            cur_pts_rect = pts_rect[bs_idx]
+
+            # calculate recall
+            if not args.test:
+                cur_rpn_cls_label = rpn_cls_label[bs_idx]
+                cur_gt_boxes3d = gt_boxes3d[bs_idx]
+
+                k = cur_gt_boxes3d.__len__() - 1
+                while k > 0 and cur_gt_boxes3d[k].sum() == 0:
+                    k -= 1
+                cur_gt_boxes3d = cur_gt_boxes3d[:k + 1]
+
+                recalled_num = 0
+                if cur_gt_boxes3d.shape[0] > 0:
+                    iou3d = iou3d_utils.boxes_iou3d_gpu(cur_boxes3d, cur_gt_boxes3d[:, 0:7])
+                    gt_max_iou, _ = iou3d.max(dim=0)
+
+                    batch_iou += torch.mean(gt_max_iou) # Test
+
+                    for idx, thresh in enumerate(thresh_list):
+                        total_recalled_bbox_list[idx] += (gt_max_iou > thresh).sum().item()
+                    recalled_num = (gt_max_iou > 0.7).sum().item()
+                    total_gt_bbox += cur_gt_boxes3d.__len__()
+
+                fg_mask = cur_rpn_cls_label > 0
+                correct = ((cur_seg_result == cur_rpn_cls_label) & fg_mask).sum().float()
+                union = fg_mask.sum().float() + (cur_seg_result > 0).sum().float() - correct
+                rpn_iou = correct / torch.clamp(union, min=1.0)
+                rpn_iou_avg += rpn_iou.item()
 
         #     # save result
         #     if args.save_rpn_feature:
@@ -293,11 +421,17 @@ def eval_one_epoch_rpn(model, dataloader, epoch_id, result_dir, logger):
         #         image_shape = dataset.get_image_shape(cur_sample_id)
         #         save_kitti_format(cur_sample_id, calib, cur_boxes3d, kitti_output_dir, cur_scores_raw, image_shape)
 
+        avg_iou += batch_iou / batch_size
+
         disp_dict = {'mode': mode, 'recall': '%d/%d' % (total_recalled_bbox_list[3], total_gt_bbox),
                      'rpn_iou': rpn_iou_avg / max(cnt, 1.0)}
         progress_bar.set_postfix(disp_dict)
         progress_bar.update()
+    
+    avg_iou = avg_iou.item() / len(dataloader)
+    print("avergae IOU: ", avg_iou)
 
+    print("test: rpn_loss_epoch: ", rpn_loss_epoch.item() / len(dataloader))
     progress_bar.close()
 
     logger.info(str(datetime.now()))
@@ -1054,14 +1188,14 @@ def create_dataloader_jrdb(logger):
     with open(cfg_file, "r") as f:
         jrdb_cfg = yaml.safe_load(f)
 
-    # test_set = JRDBRCNNDataset(jrdb_cfg["dataset"], npoints=cfg.RPN.NUM_POINTS, split=cfg.TEST.SPLIT, mode=mode,
-    #                             logger=logger,
-    #                             rcnn_eval_roi_dir=args.rcnn_eval_roi_dir,
-    #                             rcnn_eval_feature_dir=args.rcnn_eval_feature_dir)
-    test_set = JRDBRCNNDataset(jrdb_cfg["dataset"], npoints=cfg.RPN.NUM_POINTS, split="train", mode=mode,
+    test_set = JRDBRCNNDataset(jrdb_cfg["dataset"], npoints=cfg.RPN.NUM_POINTS, split=cfg.TEST.SPLIT, mode=mode,
                                 logger=logger,
                                 rcnn_eval_roi_dir=args.rcnn_eval_roi_dir,
                                 rcnn_eval_feature_dir=args.rcnn_eval_feature_dir)
+    # test_set = JRDBRCNNDataset(jrdb_cfg["dataset"], npoints=cfg.RPN.NUM_POINTS, split="train", mode=mode,
+    #                             logger=logger,
+    #                             rcnn_eval_roi_dir=args.rcnn_eval_roi_dir,
+    #                             rcnn_eval_feature_dir=args.rcnn_eval_feature_dir)
 
     
     test_loader = DataLoader(test_set, batch_size=args.batch_size, pin_memory=True,
@@ -1083,18 +1217,18 @@ if __name__ == "__main__":
     if args.eval_mode == 'rpn':
         cfg.RPN.ENABLED = True
         cfg.RCNN.ENABLED = False
-        root_result_dir = os.path.join('../', 'output_one_sample_overfit', 'rpn', cfg.TAG)
-        ckpt_dir = os.path.join('../', 'output_one_sample_overfit', 'rpn', cfg.TAG, 'ckpt')
+        root_result_dir = os.path.join('../', 'output_full_dataset', 'rpn', cfg.TAG)
+        ckpt_dir = os.path.join('../', 'output_full_dataset', 'rpn', cfg.TAG, 'ckpt')
     elif args.eval_mode == 'rcnn':
         cfg.RCNN.ENABLED = True
         cfg.RPN.ENABLED = cfg.RPN.FIXED = True
-        root_result_dir = os.path.join('../', 'output_one_sample_overfit', 'rcnn', cfg.TAG)
-        ckpt_dir = os.path.join('../', 'output_one_sample_overfit', 'rcnn', cfg.TAG, 'ckpt')
+        root_result_dir = os.path.join('../', 'output_full_dataset', 'rcnn', cfg.TAG)
+        ckpt_dir = os.path.join('../', 'output_full_dataset', 'rcnn', cfg.TAG, 'ckpt')
     elif args.eval_mode == 'rcnn_offline':
         cfg.RCNN.ENABLED = True
         cfg.RPN.ENABLED = False
-        root_result_dir = os.path.join('../', 'output_one_sample_overfit', 'rcnn', cfg.TAG)
-        ckpt_dir = os.path.join('../', 'output_one_sample_overfit', 'rcnn', cfg.TAG, 'ckpt')
+        root_result_dir = os.path.join('../', 'output_full_dataset', 'rcnn', cfg.TAG)
+        ckpt_dir = os.path.join('../', 'output_full_dataset', 'rcnn', cfg.TAG, 'ckpt')
         assert args.rcnn_eval_roi_dir is not None and args.rcnn_eval_feature_dir is not None
     else:
         raise NotImplementedError

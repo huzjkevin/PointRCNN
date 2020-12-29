@@ -2,12 +2,20 @@ import numpy as np
 import os
 import pickle
 import torch
+import matplotlib.pyplot as plt
 
+import lib.utils.jrdb_transforms as jt
 from lib.datasets.jrdb_handle import JRDBHandle
 import lib.utils.kitti_utils as kitti_utils
 import lib.utils.roipool3d.roipool3d_utils as roipool3d_utils
 from lib.config import cfg
 
+_DEBUG_image_count = 0
+_XY_LIM = (-7, 7)
+_Z_LIM = (-1, 2)
+_SAVE_DIR = '/home/hu/Projects/PointRCNN/tmp_img'
+os.makedirs(_SAVE_DIR, exist_ok=True)
+# np.random.seed(2020)
 
 class JRDBRCNNDataset(JRDBHandle):
     def __init__(self, jrdb_cfg, npoints=16384, split='train', mode='TRAIN', random_select=True,
@@ -17,6 +25,11 @@ class JRDBRCNNDataset(JRDBHandle):
         self.__handle = JRDBHandle(split, jrdb_cfg)
         self.image_idx_list = [data["sample_id"] for data in self.__handle]
         # print("len(self.image_idx_list)", len(self.image_idx_list))
+        # total_num_points = 0
+        # for data in self.__handle:
+        #     total_num_points += len(data['points'])
+        
+        # print("avg npoints: ", total_num_points / len(self.__handle))
 
         self.classes = ('Background', 'Pedestrian')
         aug_scene_root_dir = os.path.join("../data", 'aug_scene_ped')
@@ -236,6 +249,10 @@ class JRDBRCNNDataset(JRDBHandle):
             raise NotImplementedError
 
     def get_rpn_sample(self, index):
+        # index = 10
+        # if index < self.__len__():
+        #     index = 10
+
         sample_id = int(self.sample_id_list[index])
         data_sample = self.__handle[index]
         pts_rect = data_sample["points"]
@@ -279,6 +296,7 @@ class JRDBRCNNDataset(JRDBHandle):
 
         # generate inputs
         if self.mode == 'TRAIN' or self.random_select:
+        # if False:
             if self.npoints < len(pts_rect):
                 pts_depth = pts_rect[:, 2]
                 pts_near_flag = pts_depth < 40.0
@@ -353,6 +371,15 @@ class JRDBRCNNDataset(JRDBHandle):
 
         # generate training labels
         rpn_cls_label, rpn_reg_label = self.generate_rpn_training_labels(aug_pts_rect, aug_gt_boxes3d)
+
+        # # original point_rcnn has y as the vertical axis 
+        # # but JRDB has z as the vertical axis. 
+        # # switch the y and x to keep consistent
+        # pts_input[:, [1, 2]] = pts_input[:, [2, 1]] 
+        # aug_pts_rect[:, [1, 2]] = aug_pts_rect[:, [2, 1]] 
+        # aug_gt_boxes3d[:, [1, 2]] = aug_gt_boxes3d[:, [2, 1]] 
+
+        sample_info['seq_name'] = data_sample['seq_name']
         sample_info['pts_input'] = pts_input
         sample_info['pts_rect'] = aug_pts_rect
         sample_info['pts_features'] = ret_pts_features
@@ -361,17 +388,40 @@ class JRDBRCNNDataset(JRDBHandle):
         sample_info['gt_boxes3d'] = aug_gt_boxes3d
         return sample_info
 
+
     @staticmethod
     def generate_rpn_training_labels(pts_rect, gt_boxes3d):
+        global _DEBUG_image_count
+        # gt_box3d: x, z, y, h, w, l, rz
         cls_label = np.zeros((pts_rect.shape[0]), dtype=np.int32)
-        reg_label = np.zeros((pts_rect.shape[0], 7), dtype=np.float32)  # dx, dy, dz, ry, h, w, l
+        reg_label = np.zeros((pts_rect.shape[0], 7), dtype=np.float32)  # dx, dz, dy, h, w, l, rz
         gt_corners = kitti_utils.boxes3d_to_corners3d(gt_boxes3d, rotate=True)
         extend_gt_boxes3d = kitti_utils.enlarge_box3d(gt_boxes3d, extra_width=0.2)
         extend_gt_corners = kitti_utils.boxes3d_to_corners3d(extend_gt_boxes3d, rotate=True)
+
+        # # ==========================Test==================================
+        # fig = plt.figure(figsize=(10, 10))
+        # ax_bev = fig.add_subplot(111)
+
+        # # bev
+        # ax_bev.cla()
+        # ax_bev.set_aspect("equal")
+        # ax_bev.set_xlim(_XY_LIM[0], _XY_LIM[1])
+        # ax_bev.set_ylim(_XY_LIM[0], _XY_LIM[1])
+        # ax_bev.set_title(f"frame_bev{_DEBUG_image_count}")
+        # ax_bev.set_xlabel("x [m]")
+        # ax_bev.set_ylabel("y [m]")
+        # # ax_bev.axis("off")
+        
+        # ax_bev.scatter(pts_rect[..., 0], pts_rect[..., 2], s=1, c="blue")     
+        # # ==========================Test==================================
+
         for k in range(gt_boxes3d.shape[0]):
+        # for k in range(1):
             box_corners = gt_corners[k]
-            fg_pt_flag = kitti_utils.in_hull(pts_rect, box_corners)
+            fg_pt_flag = kitti_utils.in_hull(pts_rect, box_corners) # Note
             fg_pts_rect = pts_rect[fg_pt_flag]
+
             cls_label[fg_pt_flag] = 1
 
             # enlarge the bbox3d, ignore nearby points
@@ -380,16 +430,74 @@ class JRDBRCNNDataset(JRDBHandle):
             ignore_flag = np.logical_xor(fg_pt_flag, fg_enlarge_flag)
             cls_label[ignore_flag] = -1
 
+            # # ==========================Test==================================
+            # # Switch y & z to keep consistent with kitti
+            # fg_pts_rect[:, [1, 2]] = fg_pts_rect[:, [2, 1]]  
+            # box_corners[:, [1, 2]] = box_corners[:, [2, 1]] 
+            # ignore_pts = pts_rect[ignore_flag]
+            # ignore_pts[:, [1, 2]] = ignore_pts[:, [2, 1]] 
+
+            # gt_box = gt_boxes3d[k]
+            # # Switch y & z to keep consistent with kitti
+            # gt_box[[1, 2]] = gt_box[[2, 1]]
+            # gt_box[[3,4,5]] = gt_box[[5,4,3]]
+            # gt_box = jt.Box3d(np.array(gt_box[:3]), np.array(gt_box[3:6]), gt_box[-1])
+            # gt_box.draw_bev(ax_bev)
+            # # gt_box.draw_fpv(ax_bev, dim=0)
+            # ax_bev.scatter(box_corners[..., 0], box_corners[..., 1], s=5, c='black')
+            # ax_bev.scatter(fg_pts_rect[..., 0], fg_pts_rect[..., 1], s=1, c='red')
+            # ax_bev.scatter(ignore_pts[..., 0], ignore_pts[..., 1], s=1, c='purple')
+            # # ==========================Test==================================
+
             # pixel offset of object center
             center3d = gt_boxes3d[k][0:3].copy()  # (x, y, z)
-            center3d[1] -= gt_boxes3d[k][3] / 2
+            # center3d[1] -= gt_boxes3d[k][3] / 2 # Note
             reg_label[fg_pt_flag, 0:3] = center3d - fg_pts_rect  # Now y is the true center of 3d box 20180928
 
             # size and angle encoding
             reg_label[fg_pt_flag, 3] = gt_boxes3d[k][3]  # h
             reg_label[fg_pt_flag, 4] = gt_boxes3d[k][4]  # w
             reg_label[fg_pt_flag, 5] = gt_boxes3d[k][5]  # l
-            reg_label[fg_pt_flag, 6] = gt_boxes3d[k][6]  # ry
+            reg_label[fg_pt_flag, 6] = gt_boxes3d[k][6]  # rz
+
+        # # ==============================Test========================================
+        # plt.savefig(os.path.join(_SAVE_DIR, f"frame_bev{_DEBUG_image_count}.png"))
+        # plt.close(fig)
+        # # ==============================Test========================================
+
+
+        # # ==============================Test========================================
+        # fig2 = plt.figure(figsize=(10, 10))
+        # ax_sv = fig2.add_subplot(111)
+
+        # # sv
+        # ax_sv.cla()
+        # ax_sv.set_aspect("equal")
+        # ax_sv.set_xlim(_XY_LIM[0], _XY_LIM[1])
+        # ax_sv.set_ylim(_XY_LIM[0], _XY_LIM[1])
+        # ax_sv.set_title(f"frame_sv{_DEBUG_image_count}")
+        # ax_sv.set_xlabel("x [m]")
+        # ax_sv.set_ylabel("y [m]")
+        # # ax_bev.axis("off")
+        
+        # ax_sv.scatter(pts_rect[..., 0], pts_rect[..., 2], s=1, c="blue")
+
+        # # for k in range(gt_boxes3d.shape[0]):
+        # for k in range(1):          
+        #     gt_box = jt.Box3d(np.array(gt_boxes3d[k][:3]), np.array(gt_boxes3d[k][3:6]), gt_boxes3d[k][-1])
+        #     gt_box.draw_fpv(ax_sv, dim=0)
+        #     ax_sv.scatter(gt_corners[k][..., 0], gt_corners[k][..., 2], s=5, c='black')
+
+        # plt.savefig(os.path.join(_SAVE_DIR, f"frame_sv{_DEBUG_image_count}.png"))
+        # plt.close(fig2)
+
+        _DEBUG_image_count += 1
+        # # ==============================Test========================================
+
+        # # original point_rcnn has y as the vertical axis 
+        # # but jrdb has z as the vertical axis. 
+        # # switch the y and x to keep consistent
+        # reg_label[:, [1, 2]] = reg_label[:, [2, 1]] 
 
         return cls_label, reg_label
 

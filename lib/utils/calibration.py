@@ -1,5 +1,9 @@
 import numpy as np
 import os
+import yaml
+from lib.utils.jrdb_transforms import Box3d
+import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
 
 
 def get_calib_from_file(calib_file):
@@ -56,6 +60,48 @@ class Calibration(object):
         pts_lidar_hom = self.cart_to_hom(pts_lidar)
         pts_rect = np.dot(pts_lidar_hom, np.dot(self.V2C.T, self.R0.T))
         # pts_rect = reduce(np.dot, (pts_lidar_hom, self.V2C.T, self.R0.T))
+
+        # # =============TEST===============
+        # _XY_LIM = (-7, 7)
+        # _Z_LIM = (-1, 2)
+        # _SAVE_DIR = '/home/hu/Projects/PointRCNN/tmp_img'
+        # os.makedirs(_SAVE_DIR, exist_ok=True)
+
+        # fig = plt.figure(figsize=(20, 10))
+
+        # ax1 = fig.add_subplot(121)
+        # ax2 = fig.add_subplot(122)
+
+        # # bev
+        # ax1.cla()
+        # ax1.set_aspect("equal")
+        # ax1.set_xlim(_XY_LIM[0], _XY_LIM[1])
+        # ax1.set_ylim(_XY_LIM[0], _XY_LIM[1])
+        # ax1.set_title(f"pts_lidar")
+        # ax1.set_xlabel("x [m]")
+        # ax1.set_ylabel("y [m]")
+        # # ax_bev.axis("off")
+
+        # ax2.cla()
+        # ax2.set_aspect("equal")
+        # ax2.set_xlim(_XY_LIM[0], _XY_LIM[1])
+        # ax2.set_ylim(_XY_LIM[0], _XY_LIM[1])
+        # ax2.set_title(f"pts_rect")
+        # ax2.set_xlabel("x [m]")
+        # ax2.set_ylabel("y [m]")
+        
+        # ax1.scatter(pts_lidar[..., 0], pts_lidar[..., 2], s=1, c="blue")
+        # ax2.scatter(pts_rect[..., 0], pts_rect[..., 1], s=1, c="blue")
+
+        # plt.savefig(os.path.join(_SAVE_DIR, f"pts_lidar_rect.png"))
+
+        # plt.show()
+
+        # plt.close(fig)
+
+        
+        # # =============TEST===============
+
         return pts_rect
 
     def rect_to_img(self, pts_rect):

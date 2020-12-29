@@ -5,17 +5,112 @@ import lib.utils.loss_utils as loss_utils
 from lib.config import cfg
 from collections import namedtuple
 
-# import os
-# import matplotlib.pyplot as plt
-# import numpy as np
-# from lib.utils.jrdb_transforms import Box3d
+# for debug
+import yaml
+from lib.utils.jrdb_transforms import Box3d
+import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
+import os
+import numpy as np
+
+thresh_list = [0.5]
+
+def get_rpn_loss(model, rpn_cls, rpn_reg, rpn_cls_label, rpn_reg_label, tb_dict=None):
+    ModelReturn = namedtuple("ModelReturn", ["loss", "tb_dict", "disp_dict"])
+    MEAN_SIZE = torch.from_numpy(cfg.CLS_MEAN_SIZE[0]).cuda()
+
+    if isinstance(model, nn.DataParallel):
+        rpn_cls_loss_func = model.module.rpn.rpn_cls_loss_func
+    else:
+        rpn_cls_loss_func = model.rpn.rpn_cls_loss_func
+
+    rpn_cls_label_flat = rpn_cls_label.view(-1)
+    rpn_cls_flat = rpn_cls.view(-1)
+    fg_mask = rpn_cls_label_flat > 0
+
+    # RPN classification loss
+    if cfg.RPN.LOSS_CLS == "DiceLoss":
+        rpn_loss_cls = rpn_cls_loss_func(rpn_cls, rpn_cls_label_flat)
+
+    elif cfg.RPN.LOSS_CLS == "SigmoidFocalLoss":
+        rpn_cls_target = (rpn_cls_label_flat > 0).float()
+        pos = (rpn_cls_label_flat > 0).float()
+        neg = (rpn_cls_label_flat == 0).float()
+        cls_weights = pos + neg
+        pos_normalizer = pos.sum()
+        cls_weights = cls_weights / torch.clamp(pos_normalizer, min=1.0)
+        rpn_loss_cls = rpn_cls_loss_func(rpn_cls_flat, rpn_cls_target, cls_weights)
+        rpn_loss_cls_pos = (rpn_loss_cls * pos).sum()
+        rpn_loss_cls_neg = (rpn_loss_cls * neg).sum()
+        rpn_loss_cls = rpn_loss_cls.sum()
+        if tb_dict is not None:
+            tb_dict["rpn_loss_cls_pos"] = rpn_loss_cls_pos.item()
+            tb_dict["rpn_loss_cls_neg"] = rpn_loss_cls_neg.item()
+
+    elif cfg.RPN.LOSS_CLS == "BinaryCrossEntropy":
+        weight = rpn_cls_flat.new(rpn_cls_flat.shape[0]).fill_(1.0)
+        weight[fg_mask] = cfg.RPN.FG_WEIGHT
+        rpn_cls_label_target = (rpn_cls_label_flat > 0).float()
+        batch_loss_cls = F.binary_cross_entropy(
+            torch.sigmoid(rpn_cls_flat),
+            rpn_cls_label_target,
+            weight=weight,
+            reduction="none",
+        )
+        cls_valid_mask = (rpn_cls_label_flat >= 0).float()
+        rpn_loss_cls = (batch_loss_cls * cls_valid_mask).sum() / torch.clamp(
+            cls_valid_mask.sum(), min=1.0
+        )
+    else:
+        raise NotImplementedError
+
+    # RPN regression loss
+    point_num = rpn_reg.size(0) * rpn_reg.size(1)
+    fg_sum = fg_mask.long().sum().item()
+    if fg_sum != 0:
+        loss_loc, loss_angle, loss_size, reg_loss_dict = loss_utils.get_reg_loss(
+            rpn_reg.view(point_num, -1)[fg_mask],
+            rpn_reg_label.view(point_num, 7)[fg_mask],
+            loc_scope=cfg.RPN.LOC_SCOPE,
+            loc_bin_size=cfg.RPN.LOC_BIN_SIZE,
+            num_head_bin=cfg.RPN.NUM_HEAD_BIN,
+            anchor_size=MEAN_SIZE,
+            get_xz_fine=cfg.RPN.LOC_XZ_FINE,
+            get_y_by_bin=False,
+            get_ry_fine=False,
+        )
+
+        loss_size = 3 * loss_size  # consistent with old codes
+        rpn_loss_reg = loss_loc + loss_angle + loss_size
+    else:
+        loss_loc = loss_angle = loss_size = rpn_loss_reg = rpn_loss_cls * 0
+
+    rpn_loss = (
+        rpn_loss_cls * cfg.RPN.LOSS_WEIGHT[0]
+        + rpn_loss_reg * cfg.RPN.LOSS_WEIGHT[1]
+    )
+
+    if tb_dict is not None:
+        tb_dict.update(
+            {
+                "rpn_loss_cls": rpn_loss_cls.item(),
+                "rpn_loss_reg": rpn_loss_reg.item(),
+                "rpn_loss": rpn_loss.item(),
+                "rpn_fg_sum": fg_sum,
+                "rpn_loss_loc": loss_loc.item(),
+                "rpn_loss_angle": loss_angle.item(),
+                "rpn_loss_size": loss_size.item(),
+            }
+    )
+
+    return rpn_loss
 
 
 def model_joint_fn_decorator():
     ModelReturn = namedtuple("ModelReturn", ["loss", "tb_dict", "disp_dict"])
     MEAN_SIZE = torch.from_numpy(cfg.CLS_MEAN_SIZE[0]).cuda()
 
-    def model_fn(model, data):
+    def model_fn(model, data, is_eval=False):
         if cfg.RPN.ENABLED:
             # pts_rect, pts_features, pts_input = data['pts_rect'], data['pts_features'], data['pts_input']
             # gt_boxes3d = data['gt_boxes3d']
@@ -26,6 +121,48 @@ def model_joint_fn_decorator():
                 data["pts_input"],
             )
             gt_boxes3d = data["gt_boxes3d"]
+
+
+            # # =============TEST===============
+            # batch_size = len(data)
+            # sample_id = data['sample_id']
+
+            # _XY_LIM = (-7, 7)
+            # _Z_LIM = (-1, 2)
+            # _SAVE_DIR = '../tmp_img'
+            # os.makedirs(_SAVE_DIR, exist_ok=True)
+            # for i in range(batch_size):
+            #     fig = plt.figure(figsize=(20, 10))
+
+            #     ax_bev = fig.add_subplot(111)
+
+            #     pt_xyz = pts_input[i].T
+
+            #     # bev
+            #     ax_bev.cla()
+            #     ax_bev.set_aspect("equal")
+            #     ax_bev.set_xlim(_XY_LIM[0], _XY_LIM[1])
+            #     ax_bev.set_ylim(_XY_LIM[0], _XY_LIM[1])
+            #     ax_bev.set_title(f"Frame {sample_id[i]}")
+            #     ax_bev.set_xlabel("x [m]")
+            #     ax_bev.set_ylabel("y [m]")
+            #     # ax_bev.axis("off")
+                
+            #     ax_bev.scatter(pt_xyz[0], pt_xyz[1], s=1, c="blue")
+
+            #     # gt boxes
+            #     for idx, gt_box in enumerate(data['gt_boxes3d'][i]):
+            #         gt_xyz = np.array(gt_box[:3])
+            #         gt_lwh = np.array(gt_box[3:-1])
+            #         gt_rot_z = gt_box[-1]
+            #         gt_box = Box3d(gt_xyz, gt_lwh, gt_rot_z)
+
+            #         gt_box.draw_bev(ax_bev, c='red')
+
+            #     plt.savefig(os.path.join(_SAVE_DIR, f"frame_{sample_id[i]:04}-{i}.png"))
+            #     plt.close(fig)
+
+            # # =============TEST===============
 
             if not cfg.RPN.FIXED:
                 rpn_cls_label, rpn_reg_label = (
@@ -60,50 +197,57 @@ def model_joint_fn_decorator():
 
         ret_dict = model(input_data)
 
-        # # =============TEST===============
-        # _XY_LIM = (-7, 7)
-        # _Z_LIM = (-1, 2)
-        # _SAVE_DIR = '/home/hu/Projects/PointRCNN/tmp_img'
-        # os.makedirs(_SAVE_DIR, exist_ok=True)
-
-        # fig = plt.figure(figsize=(20, 10))
-
-        # ax_bev = fig.add_subplot(111)
-
-        # pt_xyz = pts_input[0].T
-
-        # # bev
-        # ax_bev.cla()
-        # ax_bev.set_aspect("equal")
-        # ax_bev.set_xlim(_XY_LIM[0], _XY_LIM[1])
-        # ax_bev.set_ylim(_XY_LIM[0], _XY_LIM[1])
-        # ax_bev.set_title(f"Frame")
-        # ax_bev.set_xlabel("x [m]")
-        # ax_bev.set_ylabel("y [m]")
-        # # ax_bev.axis("off")
-
-        # ax_bev.scatter(pt_xyz[0], pt_xyz[1], s=1, c="blue")
-
-        # # gt boxes
-        # for idx, gt_box in enumerate(data['gt_boxes3d'][0]):
-        #     gt_xyz = np.array(gt_box[:3])
-        #     gt_lwh = np.array(gt_box[3:-1])
-        #     gt_rot_z = gt_box[-1]
-        #     gt_box = Box3d(gt_xyz, gt_lwh, gt_rot_z)
-
-        #     gt_box.draw_bev(ax_bev, c='red')
-
-        # plt.savefig(os.path.join(_SAVE_DIR, f"frame_rpn_train.png"))
-
-        # plt.show()
-
-        # # =============TEST===============
+        
 
         tb_dict = {}
         disp_dict = {}
         loss = 0
+        
         if cfg.RPN.ENABLED and not cfg.RPN.FIXED:
             rpn_cls, rpn_reg = ret_dict["rpn_cls"], ret_dict["rpn_reg"]
+
+            # # # =============TEST===============
+            # if is_eval:
+            #     # rpn_cls, rpn_reg = ret_dict['rpn_cls'], ret_dict['rpn_reg']
+            #     backbone_xyz, backbone_features = ret_dict['backbone_xyz'], ret_dict['backbone_features']
+
+            #     rpn_scores_raw = rpn_cls[:, :, 0]
+            #     rpn_scores = torch.sigmoid(rpn_scores_raw)
+            #     seg_result = (rpn_scores > cfg.RPN.SCORE_THRESH).long()
+
+            #     # proposal layer
+            #     rois, roi_scores_raw = model.rpn.proposal_layer(rpn_scores_raw, rpn_reg, backbone_xyz)  # (B, M, 7)
+            #     batch_size = rois.shape[0]
+
+            #     # calculate recall and save results to file
+            #     batch_iou3d = 0.0
+
+            #     for bs_idx in range(batch_size):
+            #         cur_scores_raw = roi_scores_raw[bs_idx]  # (N)
+            #         cur_boxes3d = rois[bs_idx]  # (N, 7)
+            #         cur_seg_result = seg_result[bs_idx]
+            #         cur_pts_rect = pts_rect[bs_idx]
+
+            #         # calculate iou
+            #         cur_rpn_cls_label = rpn_cls_label[bs_idx]
+            #         cur_gt_boxes3d = gt_boxes3d[bs_idx]
+
+            #         k = cur_gt_boxes3d.__len__() - 1
+            #         while k > 0 and cur_gt_boxes3d[k].sum() == 0:
+            #             k -= 1
+            #         cur_gt_boxes3d = cur_gt_boxes3d[:k + 1]
+
+            #         recalled_num = 0
+            #         if cur_gt_boxes3d.shape[0] > 0:
+            #             iou3d = iou3d_utils.boxes_iou3d_gpu(cur_boxes3d, cur_gt_boxes3d[:, 0:7])
+            #             gt_max_iou, _ = iou3d.max(dim=0)
+            #             batch_iou3d += gt_max_iou.sum()
+                
+            #     batch_iou3d /= batch_size
+            #     tb_dict["batch_iou3d"] = batch_iou3d
+
+            # # # =============TEST===============
+
             rpn_loss = get_rpn_loss(
                 model, rpn_cls, rpn_reg, rpn_cls_label, rpn_reg_label, tb_dict
             )

@@ -28,7 +28,7 @@ class ProposalLayer(nn.Module):
                                        get_xz_fine=cfg.RPN.LOC_XZ_FINE,
                                        get_y_by_bin=False,
                                        get_ry_fine=False)  # (N, 7)
-        proposals[:, 1] += proposals[:, 3] / 2  # set y as the center of bottom
+        # proposals[:, 1] += proposals[:, 3] / 2  # set y as the center of bottom
         proposals = proposals.view(batch_size, -1, 7)
 
         scores = rpn_scores
@@ -37,12 +37,16 @@ class ProposalLayer(nn.Module):
         batch_size = scores.size(0)
         ret_bbox3d = scores.new(batch_size, cfg[self.mode].RPN_POST_NMS_TOP_N, 7).zero_()
         ret_scores = scores.new(batch_size, cfg[self.mode].RPN_POST_NMS_TOP_N).zero_()
+
+        # ret_bbox3d = scores.new(batch_size, 18386, 7).zero_()
+        # ret_scores = scores.new(batch_size, 18386).zero_()
         for k in range(batch_size):
             scores_single = scores[k]
             proposals_single = proposals[k]
             order_single = sorted_idxs[k]
 
             if cfg.TEST.RPN_DISTANCE_BASED_PROPOSE:
+            # if False:
                 scores_single, proposals_single = self.distance_based_proposal(scores_single, proposals_single,
                                                                                order_single)
             else:

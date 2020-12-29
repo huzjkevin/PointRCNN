@@ -34,7 +34,7 @@ STATIC EVALUATION PARAMETERS
 // easy and hard evaluation level
 enum DIFFICULTY{EASY=0, HARD=1};
 
-const int32_t N_TESTIMAGES = 9736;
+const int32_t N_TESTIMAGES = 27661;
 
 const int32_t MIN_3D_N_POINTS = 10;
 const double MAX_3D_DIST[2] = {15, 25};
@@ -149,7 +149,6 @@ vector<tDetection> loadDetection(string file_name) {
   }
 
   fclose(fp);
-  // cout<<"loadDet: "<<detections.size();
   return detections;
 }
 
@@ -158,12 +157,10 @@ vector<tGroundtruth> loadGroundtruth(string file_name) {
   FILE *fp = fopen(file_name.c_str(),"r");
   if (!fp)
     throw invalid_argument("cannot read ground truth file " + file_name);
-  
   while (!feof(fp)) {
     tGroundtruth g;
     int trash;
     char str[255];
-
     if (fscanf(fp, "%s %d %d %d %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %d %d",
                    str, &g.truncation, &g.occlusion, &g.num_points_3d,
                    &g.box.alpha, &g.box.x1, &g.box.y1, &g.box.x2, &g.box.y2,
@@ -461,21 +458,16 @@ tPrData computeStatistics(CLASSES current_class, const vector<tGroundtruth> &gt,
 
   // detections with a low score are ignored for computing precision (needs FP)
   if(compute_fp)
-    for(int32_t i=0; i<det.size(); i++){
-      if(det[i].thresh<thresh){
+    for(int32_t i=0; i<det.size(); i++)
+      if(det[i].thresh<thresh)
         ignored_threshold[i] = true;
-        
-      }
-    }
 
   // evaluate all ground truth boxes
   for(int32_t i=0; i<gt.size(); i++){
 
     // this ground truth is not of the current or a neighboring class and therefore ignored
-    if(ignored_gt[i]==-1){
-      // cout<<i<<" ignored"<<endl;
+    if(ignored_gt[i]==-1)
       continue;
-    }
 
     /*=======================================================================
     find candidates (overlap with ground truth > 0.5) (logical len(det))
@@ -491,19 +483,13 @@ tPrData computeStatistics(CLASSES current_class, const vector<tGroundtruth> &gt,
       // detections not of the current class, already assigned or with a low threshold are ignored
       if(ignored_det[j]==-1)
         continue;
-      if(assigned_detection[j]){
-        // cout<<"assigned_detection: "<<i<<" ignored"<<endl;
+      if(assigned_detection[j])
         continue;
-      }
-        
-      if(ignored_threshold[j]){
-        // cout<<"ignored_threshold: "<<i<<" ignored"<<endl;
+      if(ignored_threshold[j])
         continue;
-      }
 
       // find the maximum score for the candidates and get idx of respective detection
       double overlap = boxoverlap(det[j], gt[i], -1);
-      // cout<<"overlap: "<<overlap<<endl;
 
       // for computing recall thresholds, the candidate with highest score is considered
       if(!compute_fp && overlap>MIN_OVERLAP[metric][current_class] && det[j].thresh>valid_detection){
@@ -529,11 +515,7 @@ tPrData computeStatistics(CLASSES current_class, const vector<tGroundtruth> &gt,
     /*=======================================================================
     compute TP, FP and FN
     =======================================================================*/
-    // cout<<"valid_detection: "<<valid_detection<<endl;
-    // if(valid_detection != 1){
-    //   cout<<"============================================================================================================"<<endl;
-    // }
-    
+
     // nothing was assigned to this valid ground truth
     if(valid_detection==NO_DETECTION && ignored_gt[i]==0) {
       stat.fn++;
@@ -545,7 +527,6 @@ tPrData computeStatistics(CLASSES current_class, const vector<tGroundtruth> &gt,
 
     // found a valid true positive
     else if(valid_detection!=NO_DETECTION){
-      // cout<<"found a valid true positive"<<endl;
 
       // write highest score to threshold vector
       stat.tp++;
@@ -618,9 +599,6 @@ tPrData computeStatistics(CLASSES current_class, const vector<tGroundtruth> &gt,
         stat.similarity = -1;
     }
   }
-
-  // cout<<"TP: "<<stat.tp<<endl;
-  // cout<<"FN: "<<stat.fn<<endl;
   return stat;
 }
 
@@ -663,9 +641,6 @@ bool eval_class(CLASSES current_class,
     for(int32_t j=0; j<pr_tmp.v.size(); j++)
       v.push_back(pr_tmp.v[j]);
   }
-
-  // cout<<"ignored gt: "<<ignored_gt.size()<<endl;
-  // cout<<"ignored det: "<<ignored_det.size()<<endl;
 
   // get scores that must be evaluated for recall discretization
   thresholds = getThresholds(v, n_gt);
@@ -748,10 +723,8 @@ void eval(string gt_dir, string result_dir, int c, bool depth, ofstream& outfile
     groundtruths_perseq[sequence] = groundtruths_seq;
     detections_perseq[sequence] = detections_seq;
   }
-  cout<<groundtruths.size()<<"\n";
-  cout<<detections.size()<<"\n";
-  if (groundtruths.size() != N_TESTIMAGES)
-    throw invalid_argument("Mismatch in number of ground truth files.");
+  // if (groundtruths.size() != N_TESTIMAGES)
+  //   throw invalid_argument("Mismatch in number of ground truth files.");
 
   cout << "Loaded data" << endl;
 

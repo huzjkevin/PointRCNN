@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
-result_file = 'output/rcnn/default/eval/epoch_30/val/final_result/output_jrdb_full_dataset.txt'
+result_file = 'output_full_dataset/rpn/default/eval/epoch_100/val/final_result/data/result.txt'
 with open(result_file, "r") as f:
     precisions = f.readlines()
 
@@ -18,6 +18,6 @@ ax.set_ylabel("precision")
 
 ax.plot(recall, precision)
 
-plt.savefig("tmp_img/pr_curve_full_dataset_2.png")
+plt.savefig("tmp_img/pr_curve_full_dataset.png")
 
 plt.show()

@@ -80,7 +80,14 @@ def create_dataloader(logger):
                               drop_last=True)
 
     if args.train_with_eval:
-        test_set = KittiRCNNDataset(root_dir=DATA_PATH, npoints=cfg.RPN.NUM_POINTS, split=cfg.TRAIN.VAL_SPLIT, mode='EVAL',
+        if _DEBUG:
+            test_set = KittiRCNNDataset(root_dir=DATA_PATH, npoints=cfg.RPN.NUM_POINTS, split='train', mode='EVAL',
+                                        logger=logger,
+                                        classes=cfg.CLASSES,
+                                        rcnn_eval_roi_dir=args.rcnn_eval_roi_dir,
+                                        rcnn_eval_feature_dir=args.rcnn_eval_feature_dir)
+        else:
+            test_set = KittiRCNNDataset(root_dir=DATA_PATH, npoints=cfg.RPN.NUM_POINTS, split=cfg.TRAIN.VAL_SPLIT, mode='EVAL',
                                     logger=logger,
                                     classes=cfg.CLASSES,
                                     rcnn_eval_roi_dir=args.rcnn_eval_roi_dir,
@@ -191,15 +198,15 @@ if __name__ == "__main__":
     if args.train_mode == 'rpn':
         cfg.RPN.ENABLED = True
         cfg.RCNN.ENABLED = False
-        root_result_dir = os.path.join('../', 'output', 'rpn', cfg.TAG)
+        root_result_dir = os.path.join('../', 'output_full_dataset_run2', 'rpn', cfg.TAG)
     elif args.train_mode == 'rcnn':
         cfg.RCNN.ENABLED = True
         cfg.RPN.ENABLED = cfg.RPN.FIXED = True
-        root_result_dir = os.path.join('../', 'output', 'rcnn', cfg.TAG)
+        root_result_dir = os.path.join('../', 'output_full_dataset_run2', 'rcnn', cfg.TAG)
     elif args.train_mode == 'rcnn_offline':
         cfg.RCNN.ENABLED = True
         cfg.RPN.ENABLED = False
-        root_result_dir = os.path.join('../', 'output', 'rcnn', cfg.TAG)
+        root_result_dir = os.path.join('../', 'output_full_dataset_run2', 'rcnn', cfg.TAG)
     else:
         raise NotImplementedError
 
@@ -242,8 +249,8 @@ if __name__ == "__main__":
 
 
     # create dataloader & network & optimizer
-    train_loader, test_loader = create_dataloader(logger)
-    # train_loader, test_loader = create_dataloader_jrdb(logger)
+    # train_loader, test_loader = create_dataloader(logger)
+    train_loader, test_loader = create_dataloader_jrdb(logger)
     print("jrdb data loader created")
     
     model = PointRCNN(num_classes=train_loader.dataset.num_class, use_xyz=True, mode='TRAIN')
@@ -291,7 +298,7 @@ if __name__ == "__main__":
         bnm_scheduler=bnm_scheduler,
         model_fn_eval=train_functions.model_joint_fn_decorator(),
         tb_log=tb_log,
-        eval_frequency=1,
+        eval_frequency=5,
         lr_warmup_scheduler=lr_warmup_scheduler,
         warmup_epoch=cfg.TRAIN.WARMUP_EPOCH,
         grad_norm_clip=cfg.TRAIN.GRAD_NORM_CLIP

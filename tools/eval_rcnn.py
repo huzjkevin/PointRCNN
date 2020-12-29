@@ -22,6 +22,11 @@ import time
 from tensorboardX import SummaryWriter
 import tqdm
 
+import yaml
+from lib.utils.jrdb_transforms import Box3d
+import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
+
 
 np.random.seed(1024)  # set the same seed
 
@@ -166,6 +171,58 @@ def eval_one_epoch_rpn(model, dataloader, epoch_id, result_dir, logger):
         # proposal layer
         rois, roi_scores_raw = model.rpn.proposal_layer(rpn_scores_raw, rpn_reg, backbone_xyz)  # (B, M, 7)
         batch_size = rois.shape[0]
+
+        # =============TEST===============
+        _XY_LIM = (-7, 7)
+        _Z_LIM = (-1, 2)
+        _SAVE_DIR = '../tmp_img'
+        os.makedirs(_SAVE_DIR, exist_ok=True)
+        rois_cpu = rois.data.cpu().numpy()
+        for i in range(batch_size):
+            fig = plt.figure(figsize=(20, 10))
+
+            ax_bev = fig.add_subplot(111)
+
+            pt_xyz = pts_input[0].T
+
+            # bev
+            ax_bev.cla()
+            ax_bev.set_aspect("equal")
+            ax_bev.set_xlim(_XY_LIM[0], _XY_LIM[1])
+            ax_bev.set_ylim(_XY_LIM[0], _XY_LIM[1])
+            ax_bev.set_title(f"Frame {sample_id}-{i}")
+            ax_bev.set_xlabel("x [m]")
+            ax_bev.set_ylabel("y [m]")
+            # ax_bev.axis("off")
+            
+            ax_bev.scatter(pt_xyz[0], pt_xyz[1], s=1, c="blue")
+
+            # gt boxes
+            for idx, gt_box in enumerate(data['gt_boxes3d'][i]):
+                gt_xyz = np.array(gt_box[:3])
+                gt_lwh = np.array(gt_box[3:-1])
+                gt_rot_z = gt_box[-1]
+                gt_box = Box3d(gt_xyz, gt_lwh, gt_rot_z)
+
+                gt_box.draw_bev(ax_bev, c='red')
+   
+            # rpn boxes
+            for idx, rpn_box in enumerate(rois_cpu[i]):
+                rpn_xyz = np.array(rpn_box[:3])
+                rpn_lwh = np.array(rpn_box[3:-1])
+                rpn_rot_z = rpn_box[-1]
+                rpn_box = Box3d(rpn_xyz, rpn_lwh, rpn_rot_z)
+
+                rpn_box.draw_bev(ax_bev, c='blue')
+
+            plt.savefig(os.path.join(_SAVE_DIR, f"frame_{sample_id:04}-{i}.png"))
+
+            plt.show()
+
+            plt.close(fig)
+
+        
+        # =============TEST===============
 
         # calculate recall and save results to file
         for bs_idx in range(batch_size):

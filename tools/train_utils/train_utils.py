@@ -147,7 +147,7 @@ class Trainer(object):
         for i, data in tqdm.tqdm(enumerate(d_loader, 0), total=len(d_loader), leave=False, desc='val'):
             self.optimizer.zero_grad()
 
-            loss, tb_dict, disp_dict = self.model_fn_eval(self.model, data)
+            loss, tb_dict, disp_dict = self.model_fn_eval(self.model, data, is_eval=True)
 
             total_loss += loss.item()
             count += 1
